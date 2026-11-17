@@ -1,0 +1,7 @@
+{
+  "name": "school/school-tuition-monitoring",
+  "description": "Secure Web-Based School Tuition and Payment Monitoring System",
+  "type": "project",
+  "require": { "php": ">=8.1", "ext-pdo": "*", "ext-pdo_mysql": "*", "ext-openssl": "*", "phpmailer/phpmailer": "^6.9" },
+  "autoload": { "files": ["app/helpers.php"] }
+}

@@ -1,0 +1,7 @@
+Options -Indexes
+RewriteEngine On
+# Private application/config/database/log folders are deliberately outside the public web root.
+RewriteRule ^(config|app|scripts|storage|database|vendor)(/|$) - [R=404,L,NC]
+RewriteRule ^\.env(?:\.|$) - [R=404,L,NC]
+RewriteRule ^public/ - [L]
+RewriteRule ^(.*)$ public/$1 [L]

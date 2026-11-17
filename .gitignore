@@ -1,0 +1,23 @@
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Composer
+/vendor/
+
+# Logs and runtime files
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/cache/*
+/storage/sessions/*
+
+# Uploaded files
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+
+# Other temporary files
+*.log
+.DS_Store
+Thumbs.db
