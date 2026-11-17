@@ -59,3 +59,27 @@ Mark each item only after personally testing it on the local XAMPP installation.
 - [ ] `config/`, `app/`, `scripts/`, `storage/`, and `database/` are not web-accessible.
 - [ ] Payment proof rejects unsupported file types and files over 3 MB.
 - [ ] Only verified payments reduce the outstanding balance.
+
+## Additional Security Testing Results
+
+| Security Test | Result | Notes |
+|---|---|---|
+| Progressive Account Lockout | PASSED | 15s, 30s, and 60s lockout tiers verified |
+| IP Blocking | PASSED | 10 failed attempts within 10 minutes; 10-minute block |
+| CAPTCHA Validation | PASSED | Tested on Registration, Login, and Forgot Password |
+| OTP Expiration | PASSED | Expired OTP rejected after 5 minutes |
+| OTP Resend | PASSED | Previous OTP rejected after resend |
+| Security Questions | PASSED | Incorrect answers rejected; correct answers accepted |
+| Password History | PASSED | Recent password reuse rejected |
+| CSRF Protection | PASSED | Invalid CSRF token rejected |
+| Honeypot Protection | PASSED | Bot test submission rejected and logged |
+| Security Headers | PASSED | X-Frame-Options and X-Content-Type-Options verified |
+| Session Cookie | PASSED | HttpOnly and SameSite=Lax verified |
+| Session ID Regeneration | PASSED | Session ID changed after re-login |
+| Logout Protection | PASSED | Protected dashboard inaccessible after logout |
+| Idle Session Timeout | PASSED | 15-minute inactivity timeout verified |
+| AES-256-GCM Encryption | PASSED | Guardian contact stored as ciphertext |
+| Monitoring Script | PASSED | CLI scan and duplicate flag prevention verified |
+| Monitoring Dashboard | PASSED | Saved security flags displayed |
+
+**Note:** Owner-only decryption was verified through code review. A separate cross-account runtime test has not yet been performed. The Secure cookie attribute was not enabled during localhost HTTP testing.
