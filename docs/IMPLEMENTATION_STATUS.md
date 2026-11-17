@@ -34,3 +34,24 @@
 - Idle timeout: 15 minutes.
 - IP block threshold: 10 failures in 10 minutes.
 - Security question selection: any three distinct questions from all eight official Section 5 questions.
+
+## Security Implementation Update
+
+The following security features have been implemented and tested:
+
+- Progressive account lockout (15, 30, and 60 seconds)
+- IP-based blocking after 10 failed attempts within 10 minutes
+- CAPTCHA validation on registration, login, and password recovery
+- Email OTP verification with 5-minute expiration
+- Security questions verification
+- Password history restriction (last 3 passwords)
+- CSRF token validation
+- Honeypot protection
+- Secure session management and idle timeout
+- AES-256-GCM encryption for guardian contact information
+- Security monitoring dashboard
+- CLI-based security monitoring script
+- Security event logging and monitoring flags
+- Security headers and protected logout
+
+See `SELF_TEST_CHECKLIST.md` for the corresponding testing results.
