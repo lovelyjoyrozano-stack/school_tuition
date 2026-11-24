@@ -19,23 +19,148 @@ function log_event(string $event, string $description='', ?int $userId=null, ?st
     try { $s=db()->prepare('INSERT INTO security_logs(user_id,username_typed,event_type,event_description,details,ip_address,user_agent) VALUES(?,?,?,?,?,?,?)'); $s->execute([$userId,$username,$event,substr($description,0,500),$details ? json_encode($details,JSON_UNESCAPED_SLASHES) : null,client_ip(),browser_agent()]); }
     catch(Throwable $e) { error_log('[security log] '.$e->getMessage()); }
 }
-function is_ip_blocked(): bool { $s=db()->prepare('SELECT 1 FROM ip_blocks WHERE ip_address=? AND blocked_until>NOW() ORDER BY blocked_until DESC LIMIT 1'); $s->execute([client_ip()]); return (bool)$s->fetchColumn(); }
-function count_recent_ip_failures(): int { $s=db()->prepare("SELECT COUNT(*) FROM security_logs WHERE ip_address=? AND event_type IN ('LOGIN_FAILED','OTP_FAILED','SECURITY_ANSWER_FAILED') AND created_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)"); $s->execute([client_ip()]); return (int)$s->fetchColumn(); }
-function increment_account_failure(array $user, string $event, string $username): void {
-    $n=(int)$user['failed_login_count']+1; $duration=$n>=9?60:($n>=6?30:($n>=3?15:0));
-    db()->prepare('UPDATE users SET failed_login_count=?,last_failed_login_at=NOW(),locked_until=? WHERE user_id=?')->execute([$n,$duration?date('Y-m-d H:i:s',time()+$duration):null,$user['user_id']]);
-    if(in_array($n,[3,6,9],true)){ $tier=(int)($n/3); log_event('LOCKOUT_TIER_'.$tier,'Account locked for '.$duration.' seconds after '.$n.' failed attempts',(int)$user['user_id'],$username); }
-    record_failure($event,(int)$user['user_id'],$username);
-    if(in_array($n,[3,6,9],true)){try { send_lock_alert($user,$n,$duration); } catch(Throwable $e) { error_log('[lock alert] '.$e->getMessage()); }}
+function is_ip_blocked(): bool {
+    $s = db()->prepare("
+        SELECT 1
+        FROM ip_blocks
+        WHERE ip_address = ?
+          AND blocked_until > NOW()
+        LIMIT 1
+    ");
+
+    $s->execute([client_ip()]);
+
+    return (bool) $s->fetchColumn();
 }
-function record_failure(string $event, ?int $userId=null, ?string $username=null): void {
-    log_event($event,'Authentication attempt failed',$userId,$username);
-    if (count_recent_ip_failures() >= 10) {
-        $s=db()->prepare('INSERT INTO ip_blocks(ip_address,reason,blocked_until) VALUES(?,?,DATE_ADD(NOW(),INTERVAL 10 MINUTE))');
-        $s->execute([client_ip(),'10 authentication failures within 10 minutes']);
-        log_event('IP_BLOCKED','IP temporarily blocked for 10 minutes',$userId,$username);
+function ip_block_remaining_seconds(): int {
+    $s = db()->prepare("
+        SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, NOW(), blocked_until))
+        FROM ip_blocks
+        WHERE ip_address = ?
+          AND blocked_until > NOW()
+        ORDER BY blocked_until DESC
+        LIMIT 1
+    ");
+
+    $s->execute([client_ip()]);
+
+    return max(0, (int)($s->fetchColumn() ?: 0));
+}
+function count_recent_ip_failures(): int {
+    $s = db()->prepare("
+        SELECT COUNT(*)
+        FROM security_logs
+        WHERE ip_address = ?
+          AND event_type IN (
+              'LOGIN_FAILED',
+              'OTP_FAILED',
+              'SECURITY_ANSWER_FAILED'
+          )
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+    ");
+
+    $s->execute([client_ip()]);
+
+    return (int) $s->fetchColumn();
+}
+
+function increment_account_failure(array $user, string $event, string $username): void {
+    // Continue counting every failed login
+    $n = (int)$user['failed_login_count'] + 1;
+
+    // Lockout only at exact thresholds
+    $duration = match ($n) {
+        3 => 15,
+        6 => 30,
+        9 => 60,
+        default => 0
+    };
+
+    $lockedUntil = $duration > 0
+        ? date('Y-m-d H:i:s', time() + $duration)
+        : null;
+
+    db()->prepare(
+        'UPDATE users
+         SET failed_login_count = ?,
+             last_failed_login_at = NOW(),
+             locked_until = ?
+         WHERE user_id = ?'
+    )->execute([
+        $n,
+        $lockedUntil,
+        $user['user_id']
+    ]);
+
+    if ($duration > 0) {
+        $tier = (int)($n / 3);
+
+        log_event(
+            'LOCKOUT_TIER_' . $tier,
+            'Account locked for ' . $duration . ' seconds after ' . $n . ' failed attempts',
+            (int)$user['user_id'],
+            $username
+        );
+
+        try {
+            send_lock_alert($user, $n, $duration);
+        } catch (Throwable $e) {
+            error_log('[lock alert] ' . $e->getMessage());
+        }
+    }
+
+    // Record every failed attempt for IP blocking
+    record_failure($event, (int)$user['user_id'], $username);
+}
+
+
+function record_failure(
+    string $event,
+    ?int $userId = null,
+    ?string $username = null
+): void {
+
+    // Save the failed authentication event.
+    log_event(
+        $event,
+        'Authentication attempt failed',
+        $userId,
+        $username
+    );
+
+    // Check if the IP already has an active block.
+    if (is_ip_blocked()) {
+        return;
+    }
+
+    // Count failures from this IP across all accounts.
+    $failures = count_recent_ip_failures();
+
+    // Block IP after 10 failures within 10 minutes.
+    if ($failures >= 10) {
+
+        $pdo = db();
+
+        $s = $pdo->prepare("
+            INSERT INTO ip_blocks (
+                ip_address,
+                reason,
+                blocked_until
+            )
+            VALUES (
+                ?,
+                ?,
+                DATE_ADD(NOW(), INTERVAL 10 MINUTE)
+            )
+        ");
+
+        $s->execute([
+            client_ip(),
+            '10 authentication failures within 10 minutes'
+        ]);
     }
 }
+
 function encryption_key(): string {
     $raw = base64_decode((string)envv('APP_ENCRYPTION_KEY',''), true);
     if ($raw === false || strlen($raw)!==32) throw new RuntimeException('Set APP_ENCRYPTION_KEY to a Base64-encoded 32-byte key in .env.');
@@ -163,7 +288,20 @@ function create_captcha_image(): never {
     $im=imagecreatetruecolor(160,48); $bg=imagecolorallocate($im,245,249,245); imagefill($im,0,0,$bg);
     for($i=0;$i<7;$i++){ $c=imagecolorallocate($im,random_int(120,200),random_int(120,200),random_int(120,200)); imageline($im,random_int(0,160),random_int(0,48),random_int(0,160),random_int(0,48),$c); }
     for($i=0;$i<45;$i++){ $noise=imagecolorallocate($im,random_int(150,220),random_int(150,220),random_int(150,220)); imagefilledellipse($im,random_int(0,160),random_int(0,48),2,2,$noise); }
-    $ink=imagecolorallocate($im,25,75,45); imagestring($im,5,28,16,$answer,$ink); header('Content-Type:image/png'); header('Cache-Control:no-store'); imagepng($im); imagedestroy($im); exit;
+    $ink=imagecolorallocate($im,25,75,45); $fontPath = 'C:/Windows/Fonts/arialbd.ttf';
+
+if (is_file($fontPath) && function_exists('imagettftext')) {
+    $fontSize = 24;
+    $bbox = imagettfbbox($fontSize, 0, $fontPath, $answer);
+    $textWidth = $bbox[2] - $bbox[0];
+
+    $x = (160 - $textWidth) / 2;
+    $y = 36;
+
+    imagettftext($im, $fontSize, 0, (int)$x, $y, $ink, $fontPath, $answer);
+} else {
+    imagestring($im, 5, 28, 16, $answer, $ink);
+} header('Content-Type:image/png'); header('Cache-Control:no-store'); imagepng($im); imagedestroy($im); exit;
 }
 function page_header(string $title, ?array $user=null): void { ?><!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=e($title)?> | <?=e(APP_NAME)?></title><link rel="stylesheet" href="assets/css/app.css"><script defer src="assets/js/app.js"></script></head><body data-authenticated="<?= $user ? '1' : '0' ?>" data-admin="<?= ($user && $user['role']==='admin') ? '1' : '0' ?>" data-lock-until="<?=e($_SESSION['login_lock_until']??'')?>"><div class="system-title"><?=e(APP_NAME)?></div><header class="top"><a class="brand" href="index.php"><?=e(APP_NAME)?></a><nav><a href="index.php">Home</a><?php if(!$user):?><?php if($title!=='Student Registration'):?><a class="register-link" href="index.php?page=register">Register</a><?php endif;?><?php if($title!=='Log-in'):?><a href="index.php?page=login">Log-in</a><?php endif;?><?php else:?><form method="post" action="index.php?page=logout" class="nav-logout"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><button type="submit">Log-out</button></form><?php endif;?></nav></header><main class="wrap"><h1><?=e($title)?></h1><?php }
 function page_footer(): void { ?></main><footer>© <?=date('Y')?> <?=e(APP_NAME)?> · Personal data is handled under RA 10173.</footer></body></html><?php }

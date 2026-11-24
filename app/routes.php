@@ -71,8 +71,295 @@ function register_page(): void {
 }
 
 function login_page(): void {
-    $error=''; if($_SERVER['REQUEST_METHOD']==='POST'){verify_csrf();try{if(is_ip_blocked())throw new RuntimeException('This IP address is temporarily blocked. Please try again after 10 minutes.');if(!captcha_valid()){log_event('CAPTCHA_FAILED','CAPTCHA failed during login',null,(string)($_POST['username']??''));throw new RuntimeException('CAPTCHA answer is incorrect.');}$typedUsername=(string)($_POST['username']??'');$u=trim($typedUsername);$s=db()->prepare('SELECT * FROM users WHERE username=? LIMIT 1');$s->execute([$u]);$user=$s->fetch();if($user&&!empty($user['locked_until'])&&strtotime((string)$user['locked_until'])>time()){$_SESSION['login_lock_until']=strtotime((string)$user['locked_until']);throw new RuntimeException('Invalid username or password.');}if(!$user||!password_verify((string)($_POST['password']??''),(string)$user['password_hash'])||$user['account_status']!=='active'){if($user){$newFailureCount=(int)$user['failed_login_count']+1;increment_account_failure($user,'LOGIN_FAILED',$typedUsername);if(in_array($newFailureCount,[3,6,9],true)){$dur=$newFailureCount>=9?60:($newFailureCount>=6?30:15);$_SESSION['login_lock_until']=time()+$dur;}else{unset($_SESSION['login_lock_until']);}}else{record_failure('LOGIN_FAILED',null,$typedUsername);}$_SESSION['login_fail_count']=($_SESSION['login_fail_count']??0)+1;throw new RuntimeException('Invalid username or password.');}$_SESSION['pending_user_id']=(int)$user['user_id'];issue_otp((int)$user['user_id'],'login',$user['email']);go('otp',['purpose'=>'login']);}catch(Throwable $e){$error=public_error_message($e);}}
-    page_header('Log-in');show_flash();if($error)err($error);if(!empty($_SESSION['pending_user_id']))echo '<p class="alert warning"><a href="index.php?page=otp&amp;purpose=login">Continue to email OTP verification</a></p>';?><form method="post" class="panel-form narrow"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><?php field('Username *','username','text','','required autocomplete="username"');?><label>Password *<input type="password" name="password" id="loginPassword" required autocomplete="current-password"></label><label class="check"><input type="checkbox" data-toggle-password="loginPassword"> Show Password</label><div class="captcha"><img src="index.php?page=captcha" alt="CAPTCHA"><button type="button" class="secondary refresh-captcha">Refresh</button></div><?php field('CAPTCHA *','captcha','text','','maxlength="5" required autocomplete="off"');?><button type="submit" id="loginSubmit">Continue</button><div id="lockCountdown" class="alert warning" hidden></div><?php if(($_SESSION['login_fail_count']??0)>=2):?><p><a href="index.php?page=forgot">Forgot Password?</a></p><?php endif;?><p class="small">No account? <a class="register-link" href="index.php?page=register">Please register here</a></p></form><?php page_footer();
+
+    $error = '';
+    $ipRemaining = ip_block_remaining_seconds();
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        verify_csrf();
+
+        try {
+
+            if (is_ip_blocked()) {
+                throw new RuntimeException(
+                    'This IP address is temporarily blocked.'
+                );
+            }
+
+            if (!captcha_valid()) {
+                log_event(
+                    'CAPTCHA_FAILED',
+                    'CAPTCHA failed during login',
+                    null,
+                    (string)($_POST['username'] ?? '')
+                );
+
+                throw new RuntimeException('CAPTCHA answer is incorrect.');
+            }
+
+            $typedUsername = (string)($_POST['username'] ?? '');
+            $u = trim($typedUsername);
+
+            $s = db()->prepare(
+                'SELECT * FROM users WHERE username=? LIMIT 1'
+            );
+            $s->execute([$u]);
+            $user = $s->fetch();
+
+            // Account is already locked.
+            if (
+                $user &&
+                !empty($user['locked_until']) &&
+                strtotime((string)$user['locked_until']) > time()
+            ) {
+                $_SESSION['login_lock_until'] =
+                    strtotime((string)$user['locked_until']);
+
+                // Count this failed attempt for IP blocking too.
+                record_failure(
+                    'LOGIN_FAILED',
+                    (int)$user['user_id'],
+                    $typedUsername
+                );
+
+                throw new RuntimeException(
+                    'Invalid username or password.'
+                );
+            }
+
+            // Invalid username, password, or inactive account.
+            if (
+                !$user ||
+                !password_verify(
+                    (string)($_POST['password'] ?? ''),
+                    (string)$user['password_hash']
+                ) ||
+                $user['account_status'] !== 'active'
+            ) {
+
+                if ($user) {
+
+                    $newFailureCount =
+                        (int)$user['failed_login_count'] + 1;
+
+                    increment_account_failure(
+                        $user,
+                        'LOGIN_FAILED',
+                        $typedUsername
+                    );
+
+                    if (in_array($newFailureCount, [3, 6, 9], true)) {
+
+                        $dur = $newFailureCount >= 9
+                            ? 60
+                            : ($newFailureCount >= 6 ? 30 : 15);
+
+                        $_SESSION['login_lock_until'] = time() + $dur;
+
+                    } else {
+                        unset($_SESSION['login_lock_until']);
+                    }
+
+                } else {
+
+                    record_failure(
+                        'LOGIN_FAILED',
+                        null,
+                        $typedUsername
+                    );
+                }
+
+                $_SESSION['login_fail_count'] =
+                    ($_SESSION['login_fail_count'] ?? 0) + 1;
+
+                throw new RuntimeException(
+                    'Invalid username or password.'
+                );
+            }
+
+            // Successful login continues to OTP verification.
+            $_SESSION['pending_user_id'] = (int)$user['user_id'];
+
+            issue_otp(
+                (int)$user['user_id'],
+                'login',
+                $user['email']
+            );
+
+            go('otp', ['purpose' => 'login']);
+
+        } catch (Throwable $e) {
+
+            $error = public_error_message($e);
+        }
+
+        // Check again because the latest attempt may have caused an IP block.
+        $ipRemaining = ip_block_remaining_seconds();
+    }
+
+    page_header('Log-in');
+    show_flash();
+
+    if ($error) {
+        err($error);
+    }
+
+    if (!empty($_SESSION['pending_user_id'])) {
+        echo '<p class="alert warning">
+            <a href="index.php?page=otp&amp;purpose=login">
+                Continue to email OTP verification
+            </a>
+        </p>';
+    }
+
+    ?>
+
+    <form method="post" class="panel-form narrow">
+
+        <input
+            type="hidden"
+            name="csrf_token"
+            value="<?=e(csrf())?>"
+        >
+
+        <?php
+        field(
+            'Username *',
+            'username',
+            'text',
+            '',
+            'required autocomplete="username"'
+        );
+        ?>
+
+        <label>
+            Password *
+            <input
+                type="password"
+                name="password"
+                id="loginPassword"
+                required
+                autocomplete="current-password"
+            >
+        </label>
+
+        <label class="check">
+            <input
+                type="checkbox"
+                data-toggle-password="loginPassword"
+            >
+            Show Password
+        </label>
+
+        <div class="captcha">
+            <img src="index.php?page=captcha" alt="CAPTCHA">
+            <button type="button" class="secondary refresh-captcha">
+                Refresh
+            </button>
+        </div>
+
+        <?php
+        field(
+            'CAPTCHA *',
+            'captcha',
+            'text',
+            '',
+            'maxlength="5" required autocomplete="off"'
+        );
+        ?>
+
+        <?php if ($ipRemaining > 0): ?>
+
+            <div
+                id="ipBlockCountdown"
+                class="ip-block-countdown"
+                data-seconds="<?= (int)$ipRemaining ?>"
+            >
+                <h3>IP Address Temporarily Blocked</h3>
+
+                <p>
+                    Too many failed authentication attempts.
+                    Please wait until the block expires.
+                </p>
+
+                <span
+                    id="ipCountdownTimer"
+                    class="ip-countdown-timer"
+                >10:00</span>
+
+                <p class="ip-block-expired">
+                    Login will be available after the countdown.
+                </p>
+            </div>
+
+        <?php endif; ?>
+
+        <button
+            type="submit"
+            id="loginSubmit"
+            <?= $ipRemaining > 0 ? 'disabled' : '' ?>
+        >
+            Continue
+        </button>
+
+        <div id="lockCountdown" class="alert warning" hidden></div>
+
+        <?php if (($_SESSION['login_fail_count'] ?? 0) >= 2): ?>
+            <p>
+                <a href="index.php?page=forgot">Forgot Password?</a>
+            </p>
+        <?php endif; ?>
+
+        <p class="small">
+            No account?
+            <a class="register-link" href="index.php?page=register">
+                Please register here
+            </a>
+        </p>
+
+    </form>
+
+    <?php if ($ipRemaining > 0): ?>
+
+        <script>
+        (function () {
+
+            const box = document.getElementById('ipBlockCountdown');
+            const timer = document.getElementById('ipCountdownTimer');
+
+            if (!box || !timer) return;
+
+            let remaining = parseInt(box.dataset.seconds, 10) || 0;
+
+            function updateCountdown() {
+
+                if (remaining <= 0) {
+                    timer.textContent = '00:00';
+                    window.location.reload();
+                    return;
+                }
+
+                const minutes = Math.floor(remaining / 60);
+                const seconds = remaining % 60;
+
+                timer.textContent =
+                    String(minutes).padStart(2, '0') +
+                    ':' +
+                    String(seconds).padStart(2, '0');
+
+                remaining--;
+            }
+
+            updateCountdown();
+            setInterval(updateCountdown, 1000);
+
+        })();
+        </script>
+
+    <?php endif; ?>
+
+    <?php
+    page_footer();
 }
 function send_lock_alert(array $user,int $count,int $seconds): void { try{$subject=APP_NAME.' — Account security alert';$body='<h2>Account temporarily locked</h2><p>Failed attempts: '.(int)$count.'</p><p>Time (Philippine time): '.e(date('Y-m-d H:i:s')).'</p><p>IP: '.e(client_ip()).'</p><p>Browser: '.e(browser_agent()).'</p><p>Lock duration: '.(int)$seconds.' seconds. If this was not you, reset your password now. Use Forgot Password: '.e(APP_URL.'/index.php?page=forgot').'</p>';send_plain_security_email($user['email'],$subject,$body);log_event('ALERT_EMAIL_SENT','Lockout alert sent',(int)$user['user_id'],$user['username']);}catch(Throwable $e){log_event('ALERT_EMAIL_FAILED','Lockout alert email could not be sent',(int)$user['user_id'],$user['username']);error_log('[lock alert] '.$e->getMessage());}}
 function send_plain_security_email(string $to,string $subject,string $html): void { $autoload=dirname(__DIR__).'/vendor/autoload.php';if(!is_file($autoload))throw new RuntimeException('PHPMailer unavailable');require_once $autoload;$m=new PHPMailer\PHPMailer\PHPMailer(true);$m->isSMTP();$m->Host=(string)envv('SMTP_HOST','127.0.0.1');$m->Port=(int)envv('SMTP_PORT','1025');$secure=(string)envv('SMTP_ENCRYPTION','');if($secure!=='')$m->SMTPSecure=$secure;$m->SMTPAuth=(string)envv('SMTP_USER','')!=='';if($m->SMTPAuth){$m->Username=(string)envv('SMTP_USER');$m->Password=(string)envv('SMTP_PASS');}$m->setFrom((string)envv('SMTP_FROM','no-reply@example.test'),(string)envv('SMTP_FROM_NAME',APP_NAME));$m->addAddress($to);$m->isHTML(true);$m->Subject=$subject;$m->Body=$html;$m->send();}
@@ -181,13 +468,220 @@ function dashboard_page(): void {
     $a=db()->prepare("SELECT ta.*,COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.assessment_id=ta.assessment_id AND p.status='verified'),0) AS paid FROM tuition_assessments ta WHERE ta.student_id=? ORDER BY ta.created_at DESC");$a->execute([$student['student_id']]);$assessments=$a->fetchAll();     ?>
     <section class="cards"><article class="card"><h3>Student</h3><p><?=e($u['first_name'].' '.$u['family_name'])?></p><small><?=e($student['student_number'])?> · <?=e($student['course_program'])?> · <?=e($student['year_level'])?></small><small>Parent/Guardian Contact: <?=e($guardianContact)?></small></article><article class="card"><h3>Assessments</h3><p><?=count($assessments)?></p></article><article class="card"><h3>Total Outstanding</h3><p>₱<?=number_format(array_sum(array_map(fn($x)=>(float)$x['total_assessed']-(float)$x['paid'],$assessments)),2)?></p></article></section>
     <section class="panel"><h2>Tuition Assessments</h2><?php if(!$assessments):?><p>No tuition assessment has been posted yet.</p><?php else:?><div class="table-wrap"><table><tr><th>School Year</th><th>Semester</th><th>Assessed</th><th>Verified Paid</th><th>Balance</th><th>Status</th></tr><?php foreach($assessments as $x):?><tr><td><?=e($x['school_year'])?></td><td><?=e($x['semester'])?></td><td>₱<?=number_format((float)$x['total_assessed'],2)?></td><td>₱<?=number_format((float)$x['paid'],2)?></td><td>₱<?=number_format(max(0,(float)$x['total_assessed']-(float)$x['paid']),2)?></td><td><?=e($x['assessment_status'])?></td></tr><?php endforeach;?></table></div><?php endif;?></section>
-    <section class="panel"><h2>Submit Payment</h2><form method="post" action="index.php?page=payment_submit" enctype="multipart/form-data" class="panel-form"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><label>Tuition Assessment *<select name="assessment_id" required><option value="">Select assessment</option><?php foreach($assessments as $x):?><option value="<?=$x['assessment_id']?>"><?=e($x['school_year'].' / '.$x['semester'].' — Balance ₱'.number_format(max(0,(float)$x['total_assessed']-(float)$x['paid']),2))?></option><?php endforeach;?></select></label><?php field('Amount *','amount','number','','min="0.01" step="0.01" required');?><label>Payment Method *<select name="payment_method" required><option value="cash">Cash</option><option value="bank_transfer">Bank Transfer</option><option value="gcash">GCash</option><option value="other">Other</option></select></label><?php field('Reference Number (optional)','reference_number');field('Payment Date *','payment_date','date',date('Y-m-d'),'required');?><label>Proof of Payment (JPG/PNG/PDF, max 3MB)<input type="file" name="proof" accept="image/jpeg,image/png,application/pdf"></label><button>Submit Payment for Review</button></form></section>
-    <section class="panel"><h2>Payment History</h2><?php $p=db()->prepare('SELECT p.*,ta.school_year,ta.semester FROM payments p JOIN tuition_assessments ta ON ta.assessment_id=p.assessment_id WHERE ta.student_id=? ORDER BY p.submitted_at DESC');$p->execute([$student['student_id']]);$payments=$p->fetchAll();if(!$payments):?><p>No payment submissions yet.</p><?php else:?><div class="table-wrap"><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th><th>Review note</th></tr><?php foreach($payments as $x):?><tr><td><?=e($x['payment_date'])?></td><td>₱<?=number_format((float)$x['amount'],2)?></td><td><?=e($x['payment_method'])?></td><td><?=e($x['status'])?></td><td><?=e($x['rejection_reason']??'—')?></td></tr><?php endforeach;?></table></div><?php endif;?></section><?php page_footer();
+    <section class="panel"><h2>Submit Payment</h2><form method="post" action="index.php?page=payment_submit" enctype="multipart/form-data" class="panel-form"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><label>Tuition Assessment *<select name="assessment_id" required><option value="">Select assessment</option><?php foreach($assessments as $x):?><option value="<?=$x['assessment_id']?>"><?=e($x['school_year'].' / '.$x['semester'].' — Balance ₱'.number_format(max(0,(float)$x['total_assessed']-(float)$x['paid']),2))?></option><?php endforeach;?></select></label><?php field('Amount *','amount','number','','min="0.01" step="0.01" required');?>
+<label>Payment Method *
+    <select name="payment_method" id="payment_method" required>
+        <option value="cash">Cash</option>
+        <option value="bank_transfer">Bank Transfer</option>
+        <option value="gcash">GCash</option>
+        <option value="maya">Maya</option>
+        <option value="other">Other</option>
+    </select>
+</label>
+
+<div id="paymentDetails" style="display:none; padding:15px; margin:12px 0; border:1px solid #d9e5da; border-radius:10px;">
+
+    <div id="gcashDetails" style="display:none;">
+        <h3>GCash Payment Details</h3>
+        <p><strong>Account Name:</strong> School Tuition</p>
+        <p><strong>GCash Number:</strong> 09505035338</p>
+       <img src="assets/images/gcash_qr.png"
+     alt="GCash QR Code"
+     style="width:200px; max-width:100%; height:auto; border-radius:10px;">
+    </div>
+
+    <div id="mayaDetails" style="display:none;">
+        <h3>Maya Payment Details</h3>
+        <p><strong>Account Name:</strong> School Tuition </p>
+        <p><strong>Maya Number:</strong> 09171234567</p>
+       <img src="assets/images/maya_qr.png"
+     alt="Maya QR Code"
+     style="width:200px; max-width:100%; height:auto; border-radius:10px;">
+    </div>
+
+    <div id="bankDetails" style="display:none;">
+        <h3>Bank Transfer Details</h3>
+        <p><strong>Bank Name:</strong> Union Bank</p>
+        <p><strong>Account Name:</strong> School Tuition</p>
+        <p><strong>Account Number:</strong> 123456789012</p>
+        <img src="assets/images/bank_transfer_qr.png"
+     alt="Bank QR Code"
+     style="width:200px; max-width:100%; height:auto; border-radius:10px;">
+    </div>
+
+    
+
+<script>
+document.getElementById('payment_method').addEventListener('change', function() {
+    const method = this.value;
+
+    document.getElementById('paymentDetails').style.display =
+        ['gcash', 'maya', 'bank_transfer'].includes(method)
+        ? 'block' : 'none';
+
+    document.getElementById('gcashDetails').style.display =
+        method === 'gcash' ? 'block' : 'none';
+
+    document.getElementById('mayaDetails').style.display =
+        method === 'maya' ? 'block' : 'none';
+
+    document.getElementById('bankDetails').style.display =
+        method === 'bank_transfer' ? 'block' : 'none';
+});
+</script>
+<?php field('Reference Number (optional)','reference_number');field('Payment Date *','payment_date','date',date('Y-m-d'),'required');?><label>Proof of Payment (JPG/PNG/PDF, max 3MB)<input type="file" name="proof" accept="image/jpeg,image/png,application/pdf"></label><button>Submit Payment for Review</button></form></section>
+    <section class="panel"><h2>Payment History</h2><?php $p=db()->prepare('SELECT p.*,ta.school_year,ta.semester FROM payments p JOIN tuition_assessments ta ON ta.assessment_id=p.assessment_id WHERE ta.student_id=? ORDER BY p.submitted_at DESC');$p->execute([$student['student_id']]);$payments=$p->fetchAll();if(!$payments):?><p>No payment submissions yet.</p><?php else:?><div class="table-wrap"><table><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th><th>Review note</th></tr><?php foreach($payments as $x):?><tr><td><?=e($x['payment_date'])?></td><td>₱<?=number_format((float)$x['amount'],2)?></td><td><?=e($x['payment_method'])?></td><td><?=e($x['status'])?></td><td><?=e($x['rejection_reason']??'—')?></td></tr><?php endforeach;?></table></div><?php endif;?></section><?php page_footer();page_footer();
 }
+
 function payment_submit_page(): never {
-    $u=require_role('student');if($_SERVER['REQUEST_METHOD']!=='POST'){go('dashboard');}verify_csrf();$s=db()->prepare('SELECT student_id FROM student_profiles WHERE user_id=?');$s->execute([$u['user_id']]);$student=$s->fetch();if(!$student)go('dashboard');
-    try{$assessment=(int)($_POST['assessment_id']??0);$a=db()->prepare('SELECT assessment_id FROM tuition_assessments WHERE assessment_id=? AND student_id=?');$a->execute([$assessment,$student['student_id']]);if(!$a->fetch())throw new RuntimeException('Please select a valid tuition assessment.');$amount=(float)($_POST['amount']??0);if($amount<=0)throw new RuntimeException('Payment amount must be greater than zero.');$method=(string)($_POST['payment_method']??'');if(!in_array($method,['cash','bank_transfer','gcash','other'],true))throw new RuntimeException('Select a valid payment method.');$date=(string)($_POST['payment_date']??'');if(!preg_match('/^\d{4}-\d{2}-\d{2}$/',$date))throw new RuntimeException('Enter a valid payment date.');$path=null;if(!empty($_FILES['proof']['name'])){$f=$_FILES['proof'];if($f['error']!==UPLOAD_ERR_OK||$f['size']>3*1024*1024)throw new RuntimeException('Proof file must be 3MB or smaller.');$mime=(new finfo(FILEINFO_MIME_TYPE))->file($f['tmp_name']);$ext=['image/jpeg'=>'jpg','image/png'=>'png','application/pdf'=>'pdf'][$mime]??null;if(!$ext)throw new RuntimeException('Proof must be a JPG, PNG, or PDF file.');$name=bin2hex(random_bytes(16)).'.'.$ext;$dest=dirname(__DIR__).'/storage/uploads/'.$name;if(!move_uploaded_file($f['tmp_name'],$dest))throw new RuntimeException('Unable to save the payment proof.');$path=$name;}$ins=db()->prepare('INSERT INTO payments(assessment_id,amount,payment_method,reference_number,proof_file_path,payment_date,status) VALUES(?,?,?,?,?,?,\'pending\')');$ins->execute([$assessment,$amount,$method,trim((string)($_POST['reference_number']??''))?:null,$path,$date]);log_event('PAYMENT_SUBMITTED','Student submitted a payment for review',(int)$u['user_id'],$u['username']);flash('Payment submitted. It will count toward your balance only after cashier verification.','success');}catch(Throwable $e){flash(public_error_message($e),'error');}go('dashboard');
+    $u = require_role('student');
+
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        go('dashboard');
+    }
+
+    verify_csrf();
+
+    $s = db()->prepare(
+        'SELECT student_id FROM student_profiles WHERE user_id=?'
+    );
+    $s->execute([$u['user_id']]);
+    $student = $s->fetch();
+
+    if (!$student) go('dashboard');
+
+    try {
+        $assessment = (int)($_POST['assessment_id'] ?? 0);
+
+        $a = db()->prepare(
+            'SELECT assessment_id FROM tuition_assessments
+             WHERE assessment_id=? AND student_id=?'
+        );
+        $a->execute([$assessment, $student['student_id']]);
+
+        if (!$a->fetch()) {
+            throw new RuntimeException('Please select a valid tuition assessment.');
+        }
+
+        $amount = (float)($_POST['amount'] ?? 0);
+
+        if ($amount <= 0) {
+            throw new RuntimeException('Payment amount must be greater than zero.');
+        }
+
+        $method = (string)($_POST['payment_method'] ?? '');
+
+        if (!in_array($method, [
+            'cash',
+            'bank_transfer',
+            'gcash',
+            'maya',
+            'other'
+        ], true)) {
+            throw new RuntimeException('Select a valid payment method.');
+        }
+
+        // REQUIRE PROOF FOR DIGITAL PAYMENTS
+        $requiredMethods = [
+            'gcash',
+            'maya',
+            'bank_transfer'
+        ];
+
+        $proofRequired = in_array($method, $requiredMethods, true);
+
+        $path = null;
+        $f = $_FILES['proof'] ?? null;
+
+        if (
+            $proofRequired &&
+            (
+                !$f ||
+                $f['error'] === UPLOAD_ERR_NO_FILE
+            )
+        ) {
+            throw new RuntimeException(
+                'Payment proof is required for GCash, Maya, and Bank Transfer.'
+            );
+        }
+
+        // PROCESS UPLOADED PROOF
+        if ($f && $f['error'] !== UPLOAD_ERR_NO_FILE) {
+
+            if ($f['error'] !== UPLOAD_ERR_OK) {
+                throw new RuntimeException('Payment proof upload failed.');
+            }
+
+            if ($f['size'] > 3 * 1024 * 1024) {
+                throw new RuntimeException('Proof file must be 3MB or smaller.');
+            }
+
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->file($f['tmp_name']);
+
+            $ext = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'application/pdf' => 'pdf'
+            ][$mime] ?? null;
+
+            if (!$ext) {
+                throw new RuntimeException(
+                    'Proof must be a JPG, PNG, or PDF file.'
+                );
+            }
+
+            $name = bin2hex(random_bytes(16)) . '.' . $ext;
+
+            $dest = dirname(__DIR__) . '/storage/uploads/' . $name;
+
+            if (!move_uploaded_file($f['tmp_name'], $dest)) {
+                throw new RuntimeException('Unable to save the payment proof.');
+            }
+
+            $path = $name;
+        }
+
+        $date = (string)($_POST['payment_date'] ?? '');
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            throw new RuntimeException('Enter a valid payment date.');
+        }
+
+        $ins = db()->prepare(
+            'INSERT INTO payments
+            (assessment_id,amount,payment_method,reference_number,
+            proof_file_path,payment_date,status)
+            VALUES(?,?,?,?,?,?,\'pending\')'
+        );
+
+        $ins->execute([
+            $assessment,
+            $amount,
+            $method,
+            trim((string)($_POST['reference_number'] ?? '')) ?: null,
+            $path,
+            $date
+        ]);
+
+        log_event(
+            'PAYMENT_SUBMITTED',
+            'Student submitted a payment for review',
+            (int)$u['user_id'],
+            $u['username']
+        );
+
+        flash(
+            'Payment submitted. It will count toward your balance only after cashier verification.',
+            'success'
+        );
+
+    } catch (Throwable $e) {
+        flash(public_error_message($e), 'error');
+    }
+
+    go('dashboard');
 }
+
 function payment_proof_page(): never {
     $u=require_role('cashier','admin');$id=(int)($_GET['id']??0);$q=db()->prepare('SELECT proof_file_path FROM payments WHERE payment_id=?');$q->execute([$id]);$name=(string)$q->fetchColumn();if($name===''){http_response_code(404);exit('Proof not found.');}$name=basename($name);$path=dirname(__DIR__).'/storage/uploads/'.$name;if(!is_file($path)){http_response_code(404);exit('Proof file not found.');}$ext=strtolower(pathinfo($name,PATHINFO_EXTENSION));$types=['jpg'=>'image/jpeg','png'=>'image/png','pdf'=>'application/pdf'];if(!isset($types[$ext])){http_response_code(415);exit('Unsupported proof file.');}header('Content-Type: '.$types[$ext]);header('Content-Disposition: inline; filename="payment-proof.'.$ext.'"');header('X-Content-Type-Options: nosniff');header('Cache-Control: private, no-store');readfile($path);exit;
 }
@@ -196,9 +690,246 @@ function cashier_dashboard(array $u): void {
     if($_SERVER['REQUEST_METHOD']==='POST'&&($_POST['action']??'')==='review_payment'){verify_csrf();try{$id=(int)$_POST['payment_id'];$status=(string)$_POST['decision'];if(!in_array($status,['verified','rejected'],true))throw new RuntimeException('Invalid review decision.');$reason=trim((string)($_POST['rejection_reason']??''));if($status==='rejected'&&$reason==='')throw new RuntimeException('Provide a reason when rejecting a payment.');db()->prepare('UPDATE payments SET status=?,reviewed_by=?,reviewed_at=NOW(),rejection_reason=? WHERE payment_id=? AND status=\'pending\'')->execute([$status,$u['user_id'],$status==='rejected'?$reason:null,$id]);$s=db()->prepare('SELECT assessment_id FROM payments WHERE payment_id=?');$s->execute([$id]);$aid=(int)$s->fetchColumn();$sum=db()->prepare("SELECT total_assessed,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE assessment_id=? AND status='verified') AS paid FROM tuition_assessments WHERE assessment_id=?");$sum->execute([$aid,$aid]);$row=$sum->fetch();$new=(float)$row['paid']>=(float)$row['total_assessed']?'paid':((float)$row['paid']>0?'partially_paid':'unpaid');db()->prepare('UPDATE tuition_assessments SET assessment_status=? WHERE assessment_id=?')->execute([$new,$aid]);log_event($status==='verified'?'PAYMENT_VERIFIED':'PAYMENT_REJECTED','Cashier reviewed payment #'.$id,(int)$u['user_id'],$u['username']);flash('Payment review saved.','success');}catch(Throwable $e){flash(public_error_message($e),'error');}go('dashboard');}
     show_flash();?><section class="panel"><h2>Create Tuition Assessment</h2><form method="post" class="panel-form"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><input type="hidden" name="action" value="create_assessment"><?php field('Student Number *','student_number');field('School Year *','school_year','text','2026-2027');?><label>Semester *<select name="semester"><option>1st Semester</option><option>2nd Semester</option><option>Summer</option></select></label><?php field('Total Assessed (₱) *','total_assessed','number','','min="0.01" step="0.01" required');field('Due Date','due_date','date');?><button>Create Assessment</button></form></section>
     <section class="panel"><h2>Pending Payments</h2><?php $p=db()->query("SELECT p.*,ta.school_year,ta.semester,u.username,sp.student_number FROM payments p JOIN tuition_assessments ta ON ta.assessment_id=p.assessment_id JOIN student_profiles sp ON sp.student_id=ta.student_id JOIN users u ON u.user_id=sp.user_id WHERE p.status='pending' ORDER BY p.submitted_at")->fetchAll();if(!$p):?><p>No pending payments.</p><?php else:?><div class="table-wrap"><table><tr><th>Student</th><th>Assessment</th><th>Amount</th><th>Method</th><th>Reference</th><th>Proof</th><th>Review</th></tr><?php foreach($p as $x):?><tr><td><?=e($x['username'].' / '.$x['student_number'])?></td><td><?=e($x['school_year'].' '.$x['semester'])?></td><td>₱<?=number_format((float)$x['amount'],2)?></td><td><?=e($x['payment_method'])?></td><td><?=e($x['reference_number']??'—')?></td><td><?=$x['proof_file_path']?'<a href="index.php?page=payment_proof&amp;id='.(int)$x['payment_id'].'">View proof</a>':'—'?></td><td><form method="post" class="inline-form"><input type="hidden" name="csrf_token" value="<?=e(csrf())?>"><input type="hidden" name="action" value="review_payment"><input type="hidden" name="payment_id" value="<?=$x['payment_id']?>"><input name="rejection_reason" placeholder="Reason if rejected"><button name="decision" value="verified">Verify</button><button class="danger" name="decision" value="rejected">Reject</button></form></td></tr><?php endforeach;?></table></div><?php endif;?></section><?php
+
+// STUDENT PAYMENT RECORDS
+$searchStudent = trim((string)($_GET['student_search'] ?? ''));
+$filterStatus = (string)($_GET['payment_status'] ?? 'all');
+
+$studentsQuery = db()->prepare("
+    SELECT
+        sp.student_id,
+        sp.student_number,
+        u.username,
+        COALESCE((
+            SELECT SUM(ta.total_assessed)
+            FROM tuition_assessments ta
+            WHERE ta.student_id = sp.student_id
+        ), 0) AS total_tuition,
+        COALESCE((
+            SELECT SUM(p.amount)
+            FROM payments p
+            JOIN tuition_assessments ta
+                ON ta.assessment_id = p.assessment_id
+            WHERE ta.student_id = sp.student_id
+            AND p.status = 'verified'
+        ), 0) AS total_paid
+    FROM student_profiles sp
+    JOIN users u ON u.user_id = sp.user_id
+    WHERE (? = ''
+        OR u.username LIKE ?
+        OR sp.student_number LIKE ?)
+    ORDER BY u.username ASC
+");
+
+$studentsQuery->execute([
+    $searchStudent,
+    '%' . $searchStudent . '%',
+    '%' . $searchStudent . '%'
+]);
+
+$studentRecords = $studentsQuery->fetchAll();
+?>
+
+<section class="panel student-payment-records">
+
+    <h2>Student Payment Records</h2>
+
+    <form method="get" action="index.php" class="student-record-filter">
+        <input type="hidden" name="page" value="dashboard">
+
+        <label>
+            Search student name or ID
+            <input
+                type="search"
+                name="student_search"
+                placeholder="Search student..."
+                value="<?=e($searchStudent)?>"
+            >
+        </label>
+
+        <label>
+            Filter
+            <select name="payment_status">
+                <option value="all">All Statuses</option>
+                <option value="fully_paid"
+                    <?=$filterStatus==='fully_paid'?'selected':''?>>
+                    Fully Paid
+                </option>
+                <option value="partial"
+                    <?=$filterStatus==='partial'?'selected':''?>>
+                    Partial Payment
+                </option>
+                <option value="unpaid"
+                    <?=$filterStatus==='unpaid'?'selected':''?>>
+                    Unpaid
+                </option>
+            </select>
+        </label>
+
+        <button type="submit">Search</button>
+    </form>
+
+    <?php
+    $displayedRecords = 0;
+
+    foreach ($studentRecords as $studentRecord):
+
+        $tuition = (float)$studentRecord['total_tuition'];
+        $paid = (float)$studentRecord['total_paid'];
+        $balance = max(0, $tuition - $paid);
+
+        if ($tuition > 0 && $balance <= 0) {
+            $recordStatus = 'fully_paid';
+            $statusLabel = 'Fully Paid';
+        } elseif ($paid > 0 && $balance > 0) {
+            $recordStatus = 'partial';
+            $statusLabel = 'Partial Payment';
+        } else {
+            $recordStatus = 'unpaid';
+            $statusLabel = 'Unpaid';
+        }
+
+        if ($filterStatus !== 'all' &&
+            $filterStatus !== $recordStatus) {
+            continue;
+        }
+
+        $displayedRecords++;
+
+        $history = db()->prepare("
+            SELECT p.*
+            FROM payments p
+            JOIN tuition_assessments ta
+                ON ta.assessment_id = p.assessment_id
+            WHERE ta.student_id = ?
+            ORDER BY p.payment_date DESC, p.submitted_at DESC
+        ");
+
+        $history->execute([$studentRecord['student_id']]);
+        $studentPayments = $history->fetchAll();
+    ?>
+
+    <div class="student-record-card">
+
+        <div class="student-record-header">
+            <strong><?=e($studentRecord['username'])?></strong>
+
+            <span>
+                Student ID: <?=e($studentRecord['student_number'])?>
+            </span>
+        </div>
+
+        <div class="student-record-details">
+
+            <div>
+                <span>Total Tuition</span>
+                <strong>₱<?=number_format($tuition, 2)?></strong>
+            </div>
+
+            <div>
+                <span>Total Paid</span>
+                <strong>₱<?=number_format($paid, 2)?></strong>
+            </div>
+
+            <div>
+                <span>Remaining Balance</span>
+                <strong>₱<?=number_format($balance, 2)?></strong>
+            </div>
+
+            <div>
+                <span>Payment Status</span>
+                <strong class="record-status <?=$recordStatus?>">
+                    <?=e($statusLabel)?>
+                </strong>
+            </div>
+
+        </div>
+
+        <details class="student-record-history">
+            <summary>View Payment Records</summary>
+
+            <?php if (!$studentPayments): ?>
+
+                <p>No payment records available.</p>
+
+            <?php else: ?>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Amount</th>
+                                <th>Method</th>
+                                <th>Reference</th>
+                                <th>Proof</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <?php foreach ($studentPayments as $payment): ?>
+                                <tr>
+                                    <td><?=e($payment['payment_date'])?></td>
+
+                                    <td>
+                                        ₱<?=number_format(
+                                            (float)$payment['amount'], 2
+                                        )?>
+                                    </td>
+
+                                    <td><?=e($payment['payment_method'])?></td>
+
+                                    <td>
+                                        <?=e($payment['reference_number'] ?? '—')?>
+                                    </td>
+
+                                    <td>
+                                        <?php if (!empty($payment['proof_file_path'])): ?>
+                                            <a href="index.php?page=payment_proof&amp;id=<?=(int)$payment['payment_id']?>"
+                                               target="_blank">
+                                                📎 View Proof
+                                            </a>
+                                        <?php else: ?>
+                                            —
+                                        <?php endif; ?>
+                                    </td>
+
+                                    <td><?=e(ucfirst($payment['status']))?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+            <?php endif; ?>
+
+        </details>
+
+    </div>
+
+    <?php endforeach; ?>
+
+    <?php if ($displayedRecords === 0): ?>
+        <p class="empty-records">
+            No student payment records found.
+        </p>
+    <?php endif; ?>
+
+</section>
+
+<?php
 }
+
 function admin_dashboard(array $u): void {
-    log_event('ADMIN_VIEWED_DASHBOARD','Admin opened the security monitoring dashboard',(int)$u['user_id'],$u['username']);
+    if (!isset($_GET['_live'])) {
+    log_event(
+        'ADMIN_VIEWED_DASHBOARD',
+        'Admin opened the security monitoring dashboard',
+        (int)$u['user_id'],
+        $u['username']
+    );
+}
     $pdo=db();$today=$pdo->query("SELECT event_type,COUNT(*) c FROM security_logs WHERE DATE(created_at)=CURDATE() GROUP BY event_type")->fetchAll();$counts=[];foreach($today as $x)$counts[$x['event_type']]=(int)$x['c'];$locked=(int)$pdo->query("SELECT COUNT(*) FROM users WHERE locked_until>NOW()")->fetchColumn();$blocked=(int)$pdo->query("SELECT COUNT(DISTINCT ip_address) FROM ip_blocks WHERE blocked_until>NOW()")->fetchColumn();
     ?>
 <section class="panel">
@@ -209,11 +940,173 @@ function admin_dashboard(array $u): void {
     </a>
 </section>
 <?php
-    ?><section class="cards"><article class="card"><h3>Successful Logins Today</h3><p><?=($counts['LOGIN_SUCCESS']??0)?></p></article><article class="card"><h3>Failed Logins Today</h3><p><?=($counts['LOGIN_FAILED']??0)?></p></article><article class="card"><h3>Accounts Locked</h3><p><?=$locked?></p></article><article class="card"><h3>IPs Blocked</h3><p><?=$blocked?></p></article><article class="card"><h3>OTP Sent / Failed</h3><p><?=($counts['OTP_SENT']??0)?> / <?=($counts['OTP_FAILED']??0)?></p></article><article class="card"><h3>Alert Emails Sent</h3><p><?=($counts['ALERT_EMAIL_SENT']??0)?></p></article></section>
-    <section class="panel"><h2>Failed Logins per Hour — Last 24 Hours</h2><div class="bar-chart"><?php $rows=$pdo->query("SELECT DATE_FORMAT(created_at,'%H:00') hr,COUNT(*) c FROM security_logs WHERE event_type='LOGIN_FAILED' AND created_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) GROUP BY DATE_FORMAT(created_at,'%H:00') ORDER BY MIN(created_at)")->fetchAll();$max=max(1,...array_map(fn($r)=>(int)$r['c'],$rows));foreach($rows as $r):?><div class="bar-row"><span><?=e($r['hr'])?></span><progress max="<?=$max?>" value="<?=e($r['c'])?>"></progress><strong><?=e($r['c'])?></strong></div><?php endforeach;?></div></section>
+    ?><section class="cards"><article class="card"><h3>Successful Logins Today</h3><p><?=($counts['LOGIN_SUCCESS']??0)?></p></article><article class="card"><h3>Failed Logins Today</h3><p><?=($counts['LOGIN_FAILED']??0)?></p></article><article class="card"><h3>Accounts Locked</h3><p id="accountsLockedCount"><?=$locked?></p></article><article class="card">
+    <h3>IPs Blocked</h3>
+    <p id="ipsBlockedCount"><?=$blocked?></p>
+</article><article class="card"><h3>OTP Sent / Failed</h3><p><?=($counts['OTP_SENT']??0)?> / <?=($counts['OTP_FAILED']??0)?></p></article><article class="card"><h3>Alert Emails Sent</h3><p><?=($counts['ALERT_EMAIL_SENT']??0)?></p></article></section>
+
+<section class="panel hourly-failures-panel">
+    <h2>Failed Logins per Hour — Last 24 Hours</h2>
+
+    <?php
+    // Generate all 24 hourly slots
+    $hourlyFailures = [];
+
+    $currentHour = new DateTimeImmutable(
+        date('Y-m-d H:00:00')
+    );
+
+    for ($i = 23; $i >= 0; $i--) {
+        $slot = $currentHour->modify("-$i hours");
+        $key = $slot->format('Y-m-d H:00:00');
+
+        $hourlyFailures[$key] = [
+            'label' => $slot->format('H:00'),
+            'count' => 0,
+            'date_label' => $slot->format('M j, Y H:00')
+        ];
+    }
+
+    // Retrieve actual failed login records
+    $rangeStart = array_key_first($hourlyFailures);
+
+    $hourlyQuery = $pdo->prepare("
+        SELECT
+            DATE_FORMAT(
+                created_at,
+                '%Y-%m-%d %H:00:00'
+            ) AS hour_key,
+            COUNT(*) AS total
+        FROM security_logs
+        WHERE event_type = 'LOGIN_FAILED'
+          AND created_at >= ?
+          AND created_at < DATE_ADD(NOW(), INTERVAL 1 HOUR)
+        GROUP BY hour_key
+        ORDER BY hour_key
+    ");
+
+    $hourlyQuery->execute([$rangeStart]);
+
+    foreach ($hourlyQuery->fetchAll() as $hourRow) {
+        if (isset($hourlyFailures[$hourRow['hour_key']])) {
+            $hourlyFailures[$hourRow['hour_key']]['count']
+                = (int)$hourRow['total'];
+        }
+    }
+
+    $hourlyMax = max(
+        1,
+        ...array_column($hourlyFailures, 'count')
+    );
+
+    $hourlyPeak = max(
+        array_column($hourlyFailures, 'count')
+    );
+    ?>
+
+    <div class="hourly-chart-scroll">
+        <div class="hourly-chart">
+
+            <div class="hourly-chart-y-label">
+                Failed Login Attempts
+            </div>
+
+            <div class="hourly-chart-plot">
+
+                <?php foreach ($hourlyFailures as $hour):
+
+                    $barHeight = $hour['count'] > 0
+                        ? max(
+                            3,
+                            (int)round(
+                                ($hour['count'] / $hourlyMax) * 126
+                            )
+                        )
+                        : 2;
+
+                    $isPeak = $hour['count'] > 0
+                        && $hour['count'] === $hourlyPeak;
+                ?>
+
+                    <div
+                        class="hourly-bar-column"
+                        title="<?=e($hour['date_label'])?> — <?=e($hour['count'])?> failed logins"
+                    >
+
+                        <span class="hourly-bar-value">
+                            <?=$hour['count']?>
+                        </span>
+
+                        <div class="hourly-bar-track">
+                            <div
+                                class="hourly-bar<?=$isPeak ? ' is-peak' : ''?>"
+                                style="height: <?=$barHeight?>px"
+                            ></div>
+                        </div>
+
+                        <span class="hourly-bar-label">
+                            <?=e($hour['label'])?>
+                        </span>
+
+                    </div>
+
+                <?php endforeach; ?>
+
+            </div>
+        </div>
+    </div>
+
+    <p class="hourly-chart-note">
+        Each column represents one hour.
+        Hover over a column to view the date and
+        exact failed-login count.
+    </p>
+    <script>
+
+async function updateDashboardCounts() {
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('_live', Date.now());
+
+        const response = await fetch(url.toString(), {
+            cache: 'no-store'
+        });
+
+        if (!response.ok) return;
+
+        const html = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+
+        // Update Accounts Locked
+        const newLocked = doc.getElementById('accountsLockedCount');
+        const currentLocked = document.getElementById('accountsLockedCount');
+
+        if (newLocked && currentLocked) {
+            currentLocked.textContent = newLocked.textContent;
+        }
+
+        // Update IPs Blocked
+        const newBlocked = doc.getElementById('ipsBlockedCount');
+        const currentBlocked = document.getElementById('ipsBlockedCount');
+
+        if (newBlocked && currentBlocked) {
+            currentBlocked.textContent = newBlocked.textContent;
+        }
+
+    } catch (error) {
+        console.error('Dashboard update failed:', error);
+    }
+}
+
+updateLockedCount();
+setInterval(updateLockedCount, 2000);
+</script>
+</section>
     <section class="panel"><h2>Top 5 IPs with Failed Attempts</h2><?php $ips=$pdo->query("SELECT ip_address,COUNT(*) failures FROM security_logs WHERE event_type IN ('LOGIN_FAILED','OTP_FAILED','SECURITY_ANSWER_FAILED') AND created_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) GROUP BY ip_address ORDER BY failures DESC LIMIT 5")->fetchAll();?><div class="table-wrap"><table><tr><th>IP Address</th><th>Failures</th><th>Blocked</th></tr><?php foreach($ips as $ip):$s=$pdo->prepare('SELECT COUNT(*) FROM ip_blocks WHERE ip_address=? AND blocked_until>NOW()');$s->execute([$ip['ip_address']]);?><tr><td><?=e($ip['ip_address'])?></td><td><?=$ip['failures']?></td><td><?=$s->fetchColumn()?'Yes':'No'?></td></tr><?php endforeach;?></table></div></section>
     <section class="panel"><h2>Monitoring Flags</h2><?php $flags=$pdo->query('SELECT * FROM security_flags ORDER BY detected_at DESC LIMIT 20')->fetchAll();if(!$flags):?><p>No flags recorded by the monitoring script.</p><?php else:?><ul><?php foreach($flags as $f):?><li><strong><?=e($f['severity'])?></strong> — <?=e($f['description'])?> (<?=e($f['detected_at'])?>)</li><?php endforeach;?></ul><?php endif;?></section>
     <section class="panel"><h2>Latest Security Events</h2><form method="get" class="filters"><input type="hidden" name="page" value="dashboard"><input name="event" placeholder="Event type" value="<?=e($_GET['event']??'')?>"><input name="username" placeholder="Username" value="<?=e($_GET['username']??'')?>"><input name="ip" placeholder="IP address" value="<?=e($_GET['ip']??'')?>"><input type="date" name="from" value="<?=e($_GET['from']??'')?>"><input type="date" name="to" value="<?=e($_GET['to']??'')?>"><button>Filter</button></form><?php $sql='SELECT * FROM security_logs WHERE 1=1';$params=[];foreach(['event'=>'event_type','username'=>'username_typed','ip'=>'ip_address'] as $key=>$col){if(!empty($_GET[$key])){$sql.=" AND $col LIKE ?";$params[]='%'.$_GET[$key].'%';}}if(!empty($_GET['from'])){$sql.=' AND DATE(created_at)>=?';$params[]=$_GET['from'];}if(!empty($_GET['to'])){$sql.=' AND DATE(created_at)<=?';$params[]=$_GET['to'];}$sql.=' ORDER BY created_at DESC LIMIT 50';$st=$pdo->prepare($sql);$st->execute($params);$events=$st->fetchAll();?><div class="table-wrap" id="adminEventsContainer"><table><thead><tr><th>Time</th><th>Event</th><th>Username</th><th>IP</th><th>Description</th></tr></thead><tbody><?php foreach($events as $x):?><tr><td><?=e($x['created_at'])?></td><td><?=e($x['event_type'])?></td><td><?=e($x['username_typed']??'—')?></td><td><?=e($x['ip_address']??'—')?></td><td><?=e($x['event_description'])?></td></tr><?php endforeach;?></tbody></table></div><p class="small">Read-only monitoring view. Security events cannot be edited or deleted here. Auto-refresh: 60 seconds.</p></section><?php
+
 }
 
 

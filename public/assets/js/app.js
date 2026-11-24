@@ -54,3 +54,24 @@ function syncSecurityQuestionOptions(){
 }
 securityQuestionSelects.forEach(select=>select.addEventListener('change',syncSecurityQuestionOptions));
 syncSecurityQuestionOptions();
+
+// UI only: dock system messages inside their card and make them dismissible.
+// Messages keep their text, classes and server-side behaviour; only their position and a close button change.
+(function(){
+ const main=document.querySelector('main.wrap');if(!main)return;
+ const card=main.querySelector(':scope > form#registerForm, :scope > form.panel-form.narrow')||main.querySelector(':scope > section.hero')||(main.querySelector('input[name="page"][value="admin_accounts"]')?main.querySelector(':scope > section.panel'):null);
+ const lock=document.getElementById('lockCountdown');
+ if(card){
+  const msgs=[...main.querySelectorAll(':scope > .alert')];
+  if(lock&&card.contains(lock))msgs.push(lock);
+  if(msgs.length)card.prepend(...msgs);
+ }
+ document.querySelectorAll('.alert').forEach(box=>{
+  if(box.id==='lockCountdown'||box.querySelector(':scope > .alert-close'))return;
+  if(!box.hasAttribute('role'))box.setAttribute('role',box.classList.contains('error')?'alert':'status');
+  const close=document.createElement('button');
+  close.type='button';close.className='alert-close';close.setAttribute('aria-label','Dismiss message');close.innerHTML='&times;';
+  close.addEventListener('click',()=>{box.classList.add('is-leaving');setTimeout(()=>{box.hidden=true;box.classList.remove('is-leaving');},250);});
+  box.appendChild(close);
+ });
+})();
